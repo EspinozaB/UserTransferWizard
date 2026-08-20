@@ -1456,7 +1456,19 @@ function Build-USMTCommand {
         [bool]$SettingsOnly   = $false,
         [string]$ComputerName = "",  # machine this operation runs against; log label for all-profiles runs
         [string[]]$Extra      = @(), # expert-mode additions
-        [string]$ArgOverride  = ""   # expert mode: use this arg string verbatim
+        [string]$ArgOverride  = "",  # expert mode: use this arg string verbatim
+        # DECLARED, BECAUSE UNDECLARED IS SILENT.
+        #
+        # Callers have passed these three for a long time and this function
+        # never had them. A simple PowerShell function does not reject an
+        # unmatched named argument - it drops it into $args and carries on - so
+        # a two-user capture built a ONE-user command line, ScanState exited 0,
+        # and the store and the log both reported success while the second
+        # person's profile was never touched. Restore-under-a-different-name was
+        # dead the same way. Nothing threw, which is why it lasted.
+        [string[]]$Usernames  = @(),
+        [string]$RenameFrom   = "",
+        [string]$RenameTo     = ""
     )
     $tool     = if ($Operation -eq "Export") { "scanstate.exe" } else { "loadstate.exe" }
     $toolPath = Join-Path $USMTPath $tool
@@ -1495,7 +1507,8 @@ function Build-USMTCommand {
             -PublicXml $pubXml -ConfigXml $configXml -ExcludeXml $exXml `
             -Username $Username -AllProfiles $AllProfiles -SettingsOnly $SettingsOnly `
             -Verbosity $Verbosity -Overwrite $Overwrite `
-            -LogFile $logFile -ProgressLog $progressLog -Extra $Extra
+            -LogFile $logFile -ProgressLog $progressLog -Extra $Extra `
+            -Usernames $Usernames -RenameFrom $RenameFrom -RenameTo $RenameTo
     }
     # An edited command carries its own /l: and /progress:, and the output pane
     # has to tail the files it will really write, not the ones we planned.
@@ -1897,7 +1910,8 @@ function Get-CommandPreview {
                         -Username $Ctx.Username -AllProfiles $Ctx.AllProfiles -SettingsOnly $Ctx.SettingsOnly `
                         -Verbosity $ver -Overwrite $Ctx.Overwrite -Domain $dom `
                         -LogFile "$logDir\Export_$($Ctx.LogLabel).log" `
-                        -ProgressLog "$logDir\Export_progress.log" -Extra $Ctx.ExtraExport
+                        -ProgressLog "$logDir\Export_progress.log" -Extra $Ctx.ExtraExport `
+                        -Usernames @($Ctx.Usernames)
                 $rows += New-Row "ScanState (capture)" "$xmlDir\scanstate.exe" $a $onPC $true
             }
             if ($isImport) {
@@ -1912,7 +1926,8 @@ function Get-CommandPreview {
                         -Username $Ctx.Username -AllProfiles $Ctx.AllProfiles -SettingsOnly $Ctx.SettingsOnly `
                         -Verbosity $ver -Overwrite $false -Domain $dom `
                         -LogFile "$logDir\Import_$($Ctx.LogLabel).log" `
-                        -ProgressLog "$logDir\Import_progress.log" -Extra $Ctx.ExtraImport
+                        -ProgressLog "$logDir\Import_progress.log" -Extra $Ctx.ExtraImport `
+                        -Usernames @($Ctx.Usernames) -RenameFrom "$($Ctx.RenameFrom)" -RenameTo "$($Ctx.RenameTo)"
                 $rows += New-Row "LoadState (restore)" "$xmlDir\loadstate.exe" $a $onPC $true
             }
             if ($driveCombo) {
@@ -1925,8 +1940,12 @@ function Get-CommandPreview {
             # it is the only option in the panel that destroys anything, and it
             # ran without ever appearing in the list of what the run would do.
             if ($Ctx.RenameOn -and $isImport) {
-                $rows += New-Row "After restore: rename" "(UTW)" `
-                         "Rename $dstName to match the profile that was restored" $dstName $false
+                # The checkbox is "Restore under a different account" - USMT's
+                # /mu:, visible on the LoadState line above. It has nothing to do
+                # with renaming the machine, which is what this row used to say.
+                $who = if ($Ctx.RenameTo) { "'$($Ctx.RenameFrom)' will be restored as '$($Ctx.RenameTo)'" }
+                       else { "no new account name has been typed, so nothing will be renamed" }
+                $rows += New-Row "Restore under a different account" "(UTW)" $who $dstName $false
             }
             if ($Ctx.DeleteSource -and $isExport) {
                 $rows += New-Row "After capture: DELETE the source profile" "(UTW)" `
@@ -2852,7 +2871,11 @@ function Write-RemoteBatchFile {
         [string]$RemoteStdoutLog,
         [bool]$SettingsOnly = $false,
         [string[]]$Extra    = @(),
-        [string]$ArgOverride = ""
+        [string]$ArgOverride = "",
+        # Same reason Build-USMTCommand declares it: an unmatched named argument
+        # is not an error in a plain function, it just vanishes into $args. A
+        # two-user REMOTE capture built a one-user command line and exited 0.
+        [string[]]$Usernames = @()
     )
     # Presence is checked over the UNC; the ARGUMENT uses the path as the remote
     # machine will see it. Get-CommandPreview applies exactly the same rule so
@@ -2889,7 +2912,8 @@ function Write-RemoteBatchFile {
             -PublicXml $pubArg -ConfigXml $cfgArg -ExcludeXml $exArg `
             -Username $Username -AllProfiles $AllProfiles -SettingsOnly $SettingsOnly `
             -Verbosity $Verbosity -Overwrite $Overwrite `
-            -LogFile $RemoteLogFile -ProgressLog $RemoteProgressLog -Extra $Extra
+            -LogFile $RemoteLogFile -ProgressLog $RemoteProgressLog -Extra $Extra `
+            -Usernames $Usernames
     }
 
     $batchContent = "@echo off`r`n`"$RemoteUSMTPath\scanstate.exe`" $argStr > `"$RemoteStdoutLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n"
@@ -3283,7 +3307,11 @@ function Remove-SourceProfileAfterCapture {
     param(
         [Parameter(Mandatory)][string]$ComputerName,
         [Parameter(Mandatory)][string]$Username,
-        [Parameter(Mandatory)][string]$StorePath
+        [Parameter(Mandatory)][string]$StorePath,
+        # ScanState's log for the run that produced this store. Without it the
+        # only evidence available is store-wide, which says nothing about this
+        # particular user - see gate 2b.
+        [string]$CaptureLog = ""
     )
     $pc = "$ComputerName".Trim()
     if (-not (Test-ValidComputerName $pc)) { return @{ Ok = $false; Skipped = $true; Error = "not a valid computer name" } }
@@ -3300,6 +3328,27 @@ function Remove-SourceProfileAfterCapture {
     if (-not $sz -or [uint64]$sz.Bytes -lt 1MB) {
         Write-CrashLog "REFUSED to delete source profile: store is only $(if ($sz) { $sz.Bytes } else { 0 }) bytes"
         return @{ Ok = $false; Skipped = $true; Error = "the store is suspiciously small, so the profile was left alone" }
+    }
+
+    # 2b. AND THIS USER HAS TO BE IN IT.
+    #
+    # Gates 1 and 2 are properties of the STORE, not of the person. On a
+    # multi-user capture they pass on somebody else's data: if alice and bob
+    # captured and carol was skipped, carol's store-wide checks all succeed and
+    # her profile gets deleted with her data held nowhere. $chk.Root can even be
+    # the parent folder, so the size can be an aggregate over unrelated users.
+    #
+    # $false means the log ran to the end without ever naming her - refuse.
+    # $null means there was no readable log, which is not evidence either way,
+    # so it also refuses: this deletes the only remaining copy of someone's
+    # files, and "no proof" must never read as "go ahead".
+    $seen = Test-UserCapturedInLog -LogPath $CaptureLog -Username $Username
+    if ($seen -ne $true) {
+        $why = if ($null -eq $seen) { "there is no readable capture log to check against" }
+               else { "the capture log never names them - either nothing of theirs was captured, or the log detail is too low to tell" }
+        Write-CrashLog "REFUSED to delete source profile for '$Username' on $pc - $why"
+        return @{ Ok = $false; Skipped = $true
+                  Error = "'$Username' was left alone - $why" }
     }
 
     # 3. Find that user's profile, and only that one.
@@ -3320,6 +3369,60 @@ function Remove-SourceProfileAfterCapture {
     $r = Remove-RemoteUserProfile -ComputerName $pc -SID $t.SID
     if ($r.Ok) { return @{ Ok = $true; Skipped = $false; Error = ""; Path = $t.Path } }
     return @{ Ok = $false; Skipped = $false; Error = $r.Error }
+}
+
+function Test-UserCapturedInLog {
+    <#
+        Did THIS user actually get captured, according to ScanState's own log?
+
+        The store-level gates cannot answer this. A multi-user capture that
+        skipped one person - locked hive, no local profile, a name that matched
+        nothing - still writes a large, readable, perfectly valid store and
+        still exits 0. Both existing gates pass on the OTHER users' data, so the
+        skipped person's profile was deleted from the source with their data
+        held nowhere.
+
+        ScanState names each user as it works: "DOMAIN\user (1 of 2): 100% done"
+        and "<DOMAIN\user>\..." migration units throughout.
+
+        WHAT COUNTS AS EVIDENCE IS DELIBERATELY NARROW. Every false yes here
+        deletes somebody's only copy, and "the name appears somewhere in the
+        log" says yes far too easily:
+
+          - USMT echoes its own command line, so a name that was ASKED FOR but
+            captured nothing still appears - which is the exact case this gate
+            exists to catch. Being requested is not evidence of being captured.
+          - A bare substring lets a file called bobsled-plans.docx vouch for a
+            user named bob.
+
+        So the name has to appear the way USMT writes an ACCOUNT - qualified by
+        a backslash (DOMAIN\bob, <DOMAIN\bob>\Documents, C:\Users\bob\...) or as
+        the subject of a per-user progress line - it has to end on a word
+        boundary, and lines that merely quote the arguments are skipped.
+
+        Returns $true, $false, or $null for "cannot tell" - a missing or
+        unreadable log is not proof of either, and the caller must treat it as
+        no proof rather than as consent.
+    #>
+    param([string]$LogPath, [Parameter(Mandatory)][string]$Username)
+    if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return $null }
+    $bare = if ($Username -match '\\') { $Username.Split('\')[-1] } else { $Username }
+    if (-not $bare) { return $null }
+    try {
+        $n    = [regex]::Escape($bare)
+        $rx   = [regex]::new("(?:[\\<]$n\b)|(?:\b$n\s*\(\s*\d+\s+of\s+\d+\s*\))", 'IgnoreCase')
+        $echo = [regex]::new('command line|/ue:|/ui:|/mu:', 'IgnoreCase')
+        # These logs reach tens of megabytes, so it streams rather than loading
+        # the file: one match is enough and most are found early.
+        $sr = New-Object System.IO.StreamReader($LogPath)
+        try {
+            while ($null -ne ($line = $sr.ReadLine())) {
+                if ($echo.IsMatch($line)) { continue }
+                if ($rx.IsMatch($line))   { return $true }
+            }
+        } finally { $sr.Dispose() }
+        return $false
+    } catch { return $null }
 }
 
 function Remove-RemoteUserProfile {
@@ -3791,6 +3894,11 @@ function Remove-StoredMigration {
         # other bad input. A binding exception here would abort the whole
         # delete loop partway through instead of skipping one entry.
         [string]$Path = "",
+        # The root the path was LISTED under, from somewhere other than the path
+        # itself. Deriving it as (Split-Path $Path -Parent) makes the containment
+        # test below always true - it looks like a guard and refuses nothing.
+        # Leave it empty when there is no independent root; the location and
+        # store-shape checks still apply.
         [string]$ExpectedRoot = ""
     )
     $p = "$Path".TrimEnd('\')
@@ -3799,6 +3907,18 @@ function Remove-StoredMigration {
     if ($p -match '^[A-Za-z]:$' -or $p -match '^\\\\[^\\]+\\[^\\]+$') {
         Write-CrashLog "REFUSED to delete '$p' - that is a drive or share root"
         return @{ Ok = $false; Error = "refused: '$p' is a drive or share root" }
+    }
+    # NEVER a place user data lives, whatever the caller believes.
+    #
+    # The store folder name comes out of an operator-editable JSON. Set
+    # DefaultStorePath to "Users" and every store path this tool builds aims at
+    # C:\Users\<name> - so the LOCATION is refused here, independently of
+    # anything the caller passed. This does not depend on ExpectedRoot, which a
+    # caller can weaken by deriving it from the path it is about to delete.
+    $parentLeaf = "$(Split-Path $p -Parent)" -replace '.*\\', ''
+    if ($parentLeaf -ieq 'Users' -or $p -imatch '\\(Windows|Program Files|Program Files \(x86\)|ProgramData)(\\|$)') {
+        Write-CrashLog "REFUSED to delete '$p' - that is a system or user-profile location"
+        return @{ Ok = $false; Error = "refused: '$p' is a system or user-profile location" }
     }
     if ($ExpectedRoot) {
         $r = "$ExpectedRoot".TrimEnd('\')
@@ -3903,7 +4023,9 @@ function Invoke-RemoteExport {
         [bool]$SettingsOnly = $false,
         [string]$StorePathOverride = "",   # e.g. \\DESTPC\UTWStore$\logang - store never lands on the source
         [string[]]$Extra = @(),            # expert-mode extra arguments
-        [string]$ArgOverride = ""          # expert-mode: whole arg string, verbatim
+        [string]$ArgOverride = "",         # expert-mode: whole arg string, verbatim
+        # Multi-user capture. Undeclared this silently became a one-user run.
+        [string[]]$Usernames = @()
     )
     $unc  = Get-RemoteTempUNC $SourcePC
     $ts   = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -3935,7 +4057,8 @@ function Invoke-RemoteExport {
         -Username $Username -AllProfiles $AllProfiles -ExcludeOneDrive $ExcludeOneDrive `
         -Verbosity $Verbosity -Overwrite $Overwrite `
         -RemoteLogFile $rLog -RemoteProgressLog $rProgress -RemoteStdoutLog $rStdout `
-        -SettingsOnly $SettingsOnly -Extra $Extra -ArgOverride $ArgOverride
+        -SettingsOnly $SettingsOnly -Extra $Extra -ArgOverride $ArgOverride `
+        -Usernames $Usernames
 
     $task = Start-RemoteScanTask -SourcePC $SourcePC -RemoteUSMTPath $rUSMT
 
@@ -3972,7 +4095,13 @@ function Write-RemoteImportBatchFile {
         [string]$RemoteStdoutLog,
         [bool]$SettingsOnly = $false,
         [string[]]$Extra    = @(),
-        [string]$ArgOverride = ""
+        [string]$ArgOverride = "",
+        # Multi-user restore, and restore-under-a-different-name (/mu). Both
+        # were being passed by the caller and silently swallowed here, so a
+        # remote rename restored the profile under the ORIGINAL name instead.
+        [string[]]$Usernames = @(),
+        [string]$RenameFrom  = "",
+        [string]$RenameTo    = ""
     )
     # Same rule as the export side: presence checked over the UNC, path written
     # as the destination machine sees it. Loadstate is where V2V arbitration
@@ -3996,7 +4125,8 @@ function Write-RemoteImportBatchFile {
             -PublicXml $pubArg -ConfigXml $cfgArg `
             -Username $Username -AllProfiles $AllProfiles -SettingsOnly $SettingsOnly `
             -Verbosity $Verbosity -Overwrite $false `
-            -LogFile $RemoteLogFile -ProgressLog $RemoteProgressLog -Extra $Extra
+            -LogFile $RemoteLogFile -ProgressLog $RemoteProgressLog -Extra $Extra `
+            -Usernames $Usernames -RenameFrom $RenameFrom -RenameTo $RenameTo
     }
 
     $batchContent = "@echo off`r`n`"$RemoteUSMTPath\loadstate.exe`" $argStr > `"$RemoteStdoutLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n"
@@ -4050,7 +4180,10 @@ function Invoke-RemoteImport {
         [int]$Verbosity,
         [bool]$SettingsOnly = $false,
         [string[]]$Extra = @(),            # expert-mode extra arguments
-        [string]$ArgOverride = ""          # expert-mode: whole arg string, verbatim
+        [string]$ArgOverride = "",         # expert-mode: whole arg string, verbatim
+        [string[]]$Usernames = @(),
+        [string]$RenameFrom  = "",
+        [string]$RenameTo    = ""
     )
     $unc  = Get-RemoteTempUNC $DestPC
     $ts   = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -4076,7 +4209,8 @@ function Invoke-RemoteImport {
     Write-RemoteImportBatchFile -DestPC $DestPC -RemoteUSMTPath $rUSMT `
         -RemoteStorePath $RemoteStorePath -Username $Username -AllProfiles $AllProfiles `
         -Verbosity $Verbosity -RemoteLogFile $rLog -RemoteProgressLog $rProgress -RemoteStdoutLog $rStdout `
-        -SettingsOnly $SettingsOnly -Extra $Extra -ArgOverride $ArgOverride
+        -SettingsOnly $SettingsOnly -Extra $Extra -ArgOverride $ArgOverride `
+        -Usernames $Usernames -RenameFrom $RenameFrom -RenameTo $RenameTo
 
     $task = Start-RemoteLoadTask -DestPC $DestPC -RemoteUSMTPath $rUSMT
 

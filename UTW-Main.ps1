@@ -1338,7 +1338,7 @@ function Show-CatchUpDialog {
             return
         }
         $over = @($picked | Where-Object { $_.Class -ne "New File" }).Count
-        $warn = if ($over -gt 0) { "`r`n`r`n$over of them will OVECONTOSOITE a file that already exists on $NewPC." } else { "" }
+        $warn = if ($over -gt 0) { "`r`n`r`n$over of them will OVERWRITE a file that already exists on $NewPC." } else { "" }
         if ((Show-ThemedMessage "Copy $($picked.Count) file(s) to $NewPC?$warn" "Compare & Sync" "YesNo" "Warning") -ne "Yes") { return }
         $state.Result = $picked
         $dlg.Close()
@@ -2160,6 +2160,13 @@ function Show-UserPicker {
     $owner = $Script:MainForm
     if ($owner -and -not $owner.IsDisposed) { [void]$dlg.ShowDialog($owner) } else { [void]$dlg.ShowDialog() }
     $dlg.Dispose()
+    # NO COMMA HERE, deliberately - see Show-ProfilePicker, which needs one.
+    #
+    # The difference is the caller, not the dialog: the only caller of this
+    # function immediately does @($picked), so a one-item selection that unrolls
+    # on the way out is put back together on arrival. Wrapping here as well
+    # would hand it @(@(one)) and, worse, turn cancel from $null into a
+    # one-element array holding $null. Leave it alone.
     return $state.Result
 }
 
@@ -2340,7 +2347,29 @@ function Show-ProfilePicker {
     $owner = $Script:MainForm
     if ($owner -and -not $owner.IsDisposed) { [void]$dlg.ShowDialog($owner) } else { [void]$dlg.ShowDialog() }
     $dlg.Dispose()
-    return $state.Result
+    # THE COMMA IS LOAD-BEARING, and this is the third time in this codebase.
+    #
+    # Returning a one-element array unrolls it, so ticking exactly ONE profile
+    # handed the caller a bare hashtable. Hashtable.Count is the number of KEYS,
+    # so the confirmation read "About to permanently delete 17 user profiles"
+    # above a list of one row, and the "$chosen.Count -eq 0" guards were dead
+    # for the same reason. Neither caller wraps in @(), so the protection has to
+    # live here - compare Get-BrowseColumns, whose callers DO wrap and which
+    # must therefore NOT carry the comma. The rule is about the caller.
+    # CANCEL MUST STAY $null, and the comma alone does not allow that.
+    #
+    # ",@($state.Result)" was added to stop a one-item selection unrolling into
+    # a bare hashtable, and it did - but it also wrapped the CANCEL value:
+    # @($null) is a one-element array holding $null, whose .Count is 1 and which
+    # is not $null. Both callers test "$null -eq $chosen -or $chosen.Count -eq 0",
+    # so cancelling produced "About to permanently delete 1 user profile" over a
+    # blank row and then called Remove-RemoteUserProfile with a null SID. The
+    # cure was worse than the disease it replaced.
+    #
+    # So the two cases are separated: nothing chosen returns $null untouched,
+    # and a real selection is wrapped so one item stays a one-item array.
+    if ($null -eq $state.Result) { return $null }
+    return ,@($state.Result)
 }
 #endregion
 
@@ -2939,6 +2968,8 @@ function Show-MigrationGUI {
                     EstimateSize    = $chkEstimateSize.Checked
                     BrowseColumns   = (@($Script:BrowseColumns) -join ",")
                 SyncAppData     = $Script:SyncIncludeAppData
+                InactiveDays     = $Script:PreflightInactiveDays
+                MinFreeGB     = $Script:PreflightMinFreeGB
                     TouchTargets    = ($Script:TouchBoost -gt 1.0)
                     StackedLayout   = ($split.Orientation -eq [System.Windows.Forms.Orientation]::Horizontal)
                     StoreMode       = Get-StoreMode
@@ -6866,7 +6897,10 @@ $Script:NarrowPanels = @("Output", "Lookup")
 
         $src  = Get-ActiveText "SourcePC" $txtSourcePC
         $dst  = Get-ActiveText "NewPC"    $txtNewPC
-        $user = $txtUsername.Text.Trim()
+        # Split the same way the run does. Reading the box raw made "alice, bob"
+        # preview as one account literally called "alice, bob".
+        $ulist = @(Get-UsernameList)
+        $user  = if ($ulist.Count -gt 0) { $ulist[0] } else { "" }
         $sub  = if ($isSet) { "Settings_$(if ($src) { $src } else { $env:COMPUTERNAME })" }
                 elseif ($isAll) { if ($src) { $src } else { $env:COMPUTERNAME } }
                 else { $user }
@@ -6900,6 +6934,14 @@ $Script:NarrowPanels = @("Output", "Lookup")
             Verbosity = $Script:AppConfig.Verbosity; Domain = $txtDomain.Text.Trim()
             LogFolder = $Script:AppConfig.LogFolder
             Username = $user; AllProfiles = $isAll; SettingsOnly = $isSet
+            # WHAT THE RUN WILL ACTUALLY PASS, not a reconstruction of it.
+            #
+            # These three were missing, so a two-user capture previewed as a
+            # ONE-user command line and a restore-under-a-different-name showed
+            # no /mu: at all. A preview that disagrees with the run is worse
+            # than no preview, because it is the thing people check.
+            Usernames = $(if ($ulist.Count -gt 1) { $ulist } else { @() })
+            RenameFrom = (Get-RenameFrom); RenameTo = (Get-RenameTo)
             Overwrite = ($chkOverwrite.Checked -and $chkOverwrite.Enabled)
             ExcludeOneDrive = ($chkExcludeOneDrive.Checked -and $chkExcludeOneDrive.Enabled)
             SourcePC = $src; DestPC = $dst
@@ -8260,18 +8302,34 @@ Are you certain this is the right machine and the right person?
                 # Remove the profile store from dest PC only if "Delete store" is checked
                 if ($chkCleanup.Checked -and -not [string]::IsNullOrWhiteSpace($destStoreUNC) -and (Test-Path $destStoreUNC -ErrorAction SilentlyContinue)) {
                     try {
-                        Remove-Item -Path $destStoreUNC -Recurse -Force -ErrorAction Stop
+                        # THROUGH THE GUARDED DELETE, not a bare Remove-Item.
+                        #
+                        # This was a recursive force-delete behind nothing but a
+                        # not-blank-and-exists check, while Remove-StoredMigration
+                        # - written for this exact target class - re-proves the
+                        # path sits inside its store root and still looks like a
+                        # USMT store. That matters because the folder name comes
+                        # from DefaultStorePath in an operator-editable JSON: set
+                        # that to "Users" and this line deleted the profile
+                        # LoadState had just finished restoring.
+                        #
+                        # No -ExpectedRoot: there is no root here that was not
+                        # derived from this very path, and passing the path's own
+                        # parent makes the containment test vacuously true. What
+                        # guards this delete is the location check and the
+                        # still-a-USMT-store check inside the function.
+                        $delRes = Remove-StoredMigration -Path $destStoreUNC
+                        if (-not $delRes.Ok) { throw $delRes.Error }
                         Append-Output "Deleted store from $destPC ($destStoreUNC)" $Script:T.TextDim
                         Write-CrashLog "Deleted dest store: $destStoreUNC"
-                        # Remove parent USMT Profiles folder if now empty
-                        $parentDir = Split-Path $destStoreUNC -Parent
-                        if ($parentDir -and (Test-Path $parentDir -ErrorAction SilentlyContinue)) {
-                            $remaining = Get-ChildItem -Path $parentDir -ErrorAction SilentlyContinue
-                            if (-not $remaining -or $remaining.Count -eq 0) {
-                                Remove-Item -Path $parentDir -Force -ErrorAction SilentlyContinue
-                                Append-Output "Removed empty folder: $parentDir" $Script:T.TextDim
-                            }
-                        }
+                        # And the store FOLDER, if that was the last one in it -
+                        # through the helper, which proves the leaf is the
+                        # configured store folder and that it sits on a drive or
+                        # share root, rather than force-deleting whatever the
+                        # parent happens to be.
+                        $rootRes = Remove-EmptyStoreRoot -Root (Split-Path $destStoreUNC -Parent) `
+                                                         -FolderName $Script:AppConfig.DefaultStorePath
+                        if ($rootRes.Removed) { Append-Output "Removed empty folder: $(Split-Path $destStoreUNC -Parent)" $Script:T.TextDim }
                     } catch {
                         Append-Output "Store cleanup skipped on $destPC`: $($_.Exception.Message)" $Script:T.Warning
                         Write-CrashLog "Dest store cleanup failed: $($_.Exception.Message)"
@@ -8349,7 +8407,11 @@ Are you certain this is the right machine and the right person?
             [string]$StorePath,
             [string]$SourcePC,
             [string]$DestPC = "",
-            [string[]]$Users = @()
+            [string[]]$Users = @(),
+            # ScanState's log, so each user's deletion can be proved on evidence
+            # about THAT user rather than on store-wide evidence that may belong
+            # entirely to somebody else in the same run.
+            [string]$CaptureLog = ""
         )
         if (-not $StorePath) { return }
         $ok = Write-StoreMetadata -StorePath $StorePath -Facts @{
@@ -8380,7 +8442,7 @@ Are you certain this is the right machine and the right person?
         if ($pick -ne "Do") { Append-Output "Source profile kept on $SourcePC." $Script:T.TextDim; return }
 
         foreach ($u in $Users) {
-            $r = Remove-SourceProfileAfterCapture -ComputerName $SourcePC -Username $u -StorePath $StorePath
+            $r = Remove-SourceProfileAfterCapture -ComputerName $SourcePC -Username $u -StorePath $StorePath -CaptureLog $CaptureLog
             if ($r.Ok)          { Append-Output "Deleted $u from $SourcePC ($($r.Path))" $Script:T.Success }
             elseif ($r.Skipped) { Append-Output "$($Script:WarningSign) Did not delete $u from ${SourcePC}: $($r.Error)" $Script:T.Warning }
             else                { Append-Output "Could not delete $u from ${SourcePC}: $($r.Error)" $Script:T.Error }
@@ -8397,8 +8459,8 @@ Are you certain this is the right machine and the right person?
             Order is deliberate - the store is written and recorded BEFORE
             anything is deleted from the source.
         #>
-        param([string]$StorePath, [string]$SourcePC, [string]$DestPC = "", [string[]]$Users = @())
-        Complete-CaptureSideEffects -StorePath $StorePath -SourcePC $SourcePC -DestPC $DestPC -Users $Users
+        param([string]$StorePath, [string]$SourcePC, [string]$DestPC = "", [string[]]$Users = @(), [string]$CaptureLog = "")
+        Complete-CaptureSideEffects -StorePath $StorePath -SourcePC $SourcePC -DestPC $DestPC -Users $Users -CaptureLog $CaptureLog
         try { Invoke-StaleProfileSweep -ComputerName $SourcePC -JustCaptured $Users -StorePath $StorePath }
         catch { Write-CrashLog "Stale profile sweep failed: $($_.Exception.Message)" }
     }
@@ -8484,7 +8546,8 @@ Are you certain this is the right machine and the right person?
             Complete-CapturePost -StorePath $dStorePath -SourcePC $Script:RemoteSession.Task.PC `
                 -DestPC "$($Script:RemoteSession.DestPC)" `
                 -Users $(if ($Script:ExportPlan -and $Script:ExportPlan.MultiUser) { $Script:ExportPlan.Usernames }
-                         else { @($Script:RemoteSession.Username) })
+                         else { @($Script:RemoteSession.Username) }) `
+                -CaptureLog "$($Script:RemoteSession.LogFileUNC)"
             # Clean up source PC temp folder (contains the store that was just copied)
             # First, save the remote logs locally so they survive the cleanup
             if ($Script:AppConfig.LogFolder) {
@@ -8517,7 +8580,7 @@ Are you certain this is the right machine and the right person?
                             -AllProfiles $imp.AllProfiles -Verbosity $imp.Verbosity `
                             -SettingsOnly $(if ($imp.SettingsOnly) { $true } else { $false }) `
                             -Extra $Script:ExtraImport -ArgOverride (Get-CommandOverride "Import") -Usernames @($imp.Usernames) `
-                            -RenameFrom $(if ($imp.RenameTo) { $imp.Username } else { "" }) -RenameTo "$($imp.RenameTo)"
+                            -RenameFrom "$($imp.RenameFrom)" -RenameTo "$($imp.RenameTo)"
                         $Script:RemoteSession     = $importSess
                         $Script:RemotePhase       = 3
                         Reset-FileTail
@@ -8586,7 +8649,7 @@ Are you certain this is the right machine and the right person?
                 -Username $imp.Username -AllProfiles $imp.AllProfiles -Verbosity $imp.Verbosity `
                 -SettingsOnly $(if ($imp.SettingsOnly) { $true } else { $false }) `
                 -Extra $Script:ExtraImport -ArgOverride (Get-CommandOverride "Import") -Usernames @($imp.Usernames) `
-                            -RenameFrom $(if ($imp.RenameTo) { $imp.Username } else { "" }) -RenameTo "$($imp.RenameTo)"
+                -RenameFrom "$($imp.RenameFrom)" -RenameTo "$($imp.RenameTo)"
             $Script:RemoteSession     = $importSess
             $Script:RemotePhase       = 3
             Reset-FileTail
@@ -8724,7 +8787,7 @@ Are you certain this is the right machine and the right person?
             if ($Script:LastCapture) {
                 $lc = $Script:LastCapture; $Script:LastCapture = $null
                 Complete-CapturePost -StorePath $lc.StorePath -SourcePC $lc.SourcePC `
-                    -DestPC $lc.DestPC -Users $lc.Users
+                    -DestPC $lc.DestPC -Users $lc.Users -CaptureLog "$($lc.LogFile)"
             }
             # A restore records its half, so the store shows it has been used.
             if ($Script:LastRestore) {
@@ -8739,15 +8802,15 @@ Are you certain this is the right machine and the right person?
             # Cleanup if requested
             if ($chkCleanup.Checked -and $Script:CleanupPath) {
                 try {
-                    Remove-Item -Path $Script:CleanupPath -Recurse -Force -ErrorAction SilentlyContinue
-                    # Remove parent USMT Profiles folder if now empty
-                    $parentDir = Split-Path $Script:CleanupPath -Parent
-                    if ($parentDir -and (Test-Path $parentDir -ErrorAction SilentlyContinue)) {
-                        $remaining = Get-ChildItem -Path $parentDir -ErrorAction SilentlyContinue
-                        if (-not $remaining -or $remaining.Count -eq 0) {
-                            Remove-Item -Path $parentDir -Force -ErrorAction SilentlyContinue
-                        }
-                    }
+                    # Same guarded delete as the remote path above. This twin was
+                    # worse: -ErrorAction SilentlyContinue meant a wrong target
+                    # was deleted quietly and a refused one said nothing either.
+                    # No -ExpectedRoot, for the reason given at the remote twin:
+                    # the only root available here comes out of this same path.
+                    $delRes = Remove-StoredMigration -Path $Script:CleanupPath
+                    if (-not $delRes.Ok) { Append-Output "Store cleanup skipped - $($delRes.Error)" $Script:T.Warning }
+                    [void](Remove-EmptyStoreRoot -Root (Split-Path $Script:CleanupPath -Parent) `
+                                                 -FolderName $Script:AppConfig.DefaultStorePath)
                 }
                 catch { Append-Output "Cleanup skipped: $_" $Script:T.Warning }
                 $Script:CleanupPath = $null
@@ -9195,6 +9258,11 @@ Are you certain this is the right machine and the right person?
                 USMTPath     = $usmtPath
                 Verbosity    = $verbosity
                 SettingsOnly = $isSettingsOnly
+                # Same three the local branch above passes to Build-USMTCommand.
+                # Remote restores were dropping them silently.
+                Usernames    = $(if ($multiUser) { $usernames } else { @() })
+                RenameFrom   = (Get-RenameFrom)
+                RenameTo     = (Get-RenameTo)
             }
             Set-UIRunning $true
 
@@ -9527,6 +9595,10 @@ Are you certain this is the right machine and the right person?
                 Username = $username; USMTPath = $usmtPath; Verbosity = $verbosity
                 Overwrite = $chkOverwrite.Checked
                 Sub = $sub; DestStorePath = $destStorePath; ImportStorePath = $importStorePath
+                # Read from the form HERE, while it is still on screen. The
+                # estimate pass hands control back later, by which time the
+                # checkbox and the box beside it may say something else.
+                RenameFrom = (Get-RenameFrom); RenameTo = (Get-RenameTo)
             }
 
             Set-UIRunning $true
@@ -9663,6 +9735,12 @@ Are you certain this is the right machine and the right person?
                         USMTPath      = $usmtPath
                         Verbosity     = $p.Verbosity
                         SettingsOnly  = $isSettingsOnly
+                        # The import call reads all three. They were absent, and
+                        # a missing hashtable key is $null rather than an error,
+                        # so a remote combo restored one user and never renamed.
+                        Usernames     = $(if ($p.MultiUser) { $p.Usernames } else { @() })
+                        RenameFrom    = "$($p.RenameFrom)"
+                        RenameTo      = "$($p.RenameTo)"
                     }
                 }
 
@@ -9710,6 +9788,9 @@ Are you certain this is the right machine and the right person?
         }
         $exportCmd = Build-USMTCommand -USMTPath $usmtPath -Operation "Export" -StorePath $localStorePath -Username $username -AllProfiles $p.IsAll -ExcludeOneDrive $p.IsExcOD -Verbosity $p.Verbosity -Overwrite $p.Overwrite -SettingsOnly $isSettingsOnly `
                         -Extra $Script:ExtraExport -ArgOverride (Get-CommandOverride "Export") -Usernames $(if ($p.MultiUser) { $p.Usernames } else { @() })
+        # The log that will prove, per user, what was actually captured. Without
+        # it the post-capture deletion has only store-wide evidence to go on.
+        $Script:LastCapture.LogFile = "$($exportCmd.LogFile)"
         $opLabel = if ($isSettingsOnly) { "computer settings" } else { "profile" }
         Append-Output "Exporting $opLabel to $localStorePath..." $Script:T.Primary
         $lblStatus.Text = "Exporting..."; $lblStatus.ForeColor = $Script:T.Primary
@@ -10847,6 +10928,25 @@ Cancel  - do nothing
         # differently in the first place: settings are restored after the layout
         # pass, so this is the only moment the answer is known.
         if ($null -ne $cache.SyncAppData) { $Script:SyncIncludeAppData = [bool]$cache.SyncAppData }
+        # THESE TWO DECIDE WHAT GETS DELETED, and neither was ever saved.
+        #
+        # Both are editable in the Settings dialog, which promises the values are
+        # remembered, and both drive real behaviour: the idle threshold decides
+        # which profiles are offered for deletion, the disk figure decides
+        # whether a run is warned off. They reverted to 90 and 20 on every
+        # launch, so an operator who lowered the idle threshold to be careful
+        # got the default back without being told.
+        #
+        # Range-checked on the way in, because a value from a hand-edited file
+        # must not be able to make the threshold 0 - that would offer every
+        # profile on the machine as stale.
+        $n = 0
+        if ($null -ne $cache.InactiveDays -and [int]::TryParse("$($cache.InactiveDays)", [ref]$n) -and $n -gt 0) {
+            $Script:PreflightInactiveDays = $n
+        }
+        if ($null -ne $cache.MinFreeGB -and [int]::TryParse("$($cache.MinFreeGB)", [ref]$n) -and $n -gt 0) {
+            $Script:PreflightMinFreeGB = $n
+        }
         if ("$($cache.BrowseColumns)".Trim()) {
             # Filtered against the definitions, so a key that no longer exists -
             # a column removed in a later version - is dropped rather than
@@ -11079,6 +11179,8 @@ Cancel  - do nothing
                 EstimateSize    = $chkEstimateSize.Checked
                 BrowseColumns   = (@($Script:BrowseColumns) -join ",")
                 SyncAppData     = $Script:SyncIncludeAppData
+                InactiveDays     = $Script:PreflightInactiveDays
+                MinFreeGB     = $Script:PreflightMinFreeGB
                 TouchTargets    = ($Script:TouchBoost -gt 1.0)
                 StackedLayout   = ($split.Orientation -eq [System.Windows.Forms.Orientation]::Horizontal)
                 StoreMode       = Get-StoreMode

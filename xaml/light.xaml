@@ -1,0 +1,41 @@
+﻿<!-- Light (Metro) - from metro-light-bg.html. The dark twin's numbers do not
+     carry over: a wash that reads over #1c1c1c disappears over #ffffff, so the
+     glows and strokes here are stronger while staying pale in hue. -->
+<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="1200" Height="200">
+  <Rectangle Width="1200" Height="200">
+    <Rectangle.Fill>
+      <LinearGradientBrush StartPoint="0,0" EndPoint="1,0.6">
+        <GradientStop Color="#ffffff" Offset="0"/>
+        <GradientStop Color="#f0f0f0" Offset="1"/>
+      </LinearGradientBrush>
+    </Rectangle.Fill>
+  </Rectangle>
+
+  <Ellipse Canvas.Left="-120" Canvas.Top="-180" Width="760" Height="460" Opacity="0.42">
+    <Ellipse.Fill>
+      <RadialGradientBrush>
+        <GradientStop Color="#ca5010" Offset="0"/>
+        <GradientStop Color="#00ca5010" Offset="1"/>
+      </RadialGradientBrush>
+    </Ellipse.Fill>
+  </Ellipse>
+  <Ellipse Canvas.Left="740" Canvas.Top="20" Width="660" Height="380" Opacity="0.34">
+    <Ellipse.Fill>
+      <RadialGradientBrush>
+        <GradientStop Color="#8764b8" Offset="0"/>
+        <GradientStop Color="#008764b8" Offset="1"/>
+      </RadialGradientBrush>
+    </Ellipse.Fill>
+  </Ellipse>
+
+  <Canvas>
+    <Line X1="-120" Y1="86"  X2="1200" Y2="-14" Stroke="#ca5010" StrokeThickness="3" Opacity="0.22"/>
+    <Line X1="-120" Y1="118" X2="1200" Y2="18"  Stroke="#8764b8" StrokeThickness="3" Opacity="0.19"/>
+    <Line X1="-120" Y1="150" X2="1200" Y2="50"  Stroke="#ca5010" StrokeThickness="3" Opacity="0.16"/>
+    <Line X1="-120" Y1="182" X2="1200" Y2="82"  Stroke="#8764b8" StrokeThickness="3" Opacity="0.14"/>
+    <Line X1="-120" Y1="214" X2="1200" Y2="114" Stroke="#ca5010" StrokeThickness="3" Opacity="0.12"/>
+    <Line X1="-120" Y1="246" X2="1200" Y2="146" Stroke="#8764b8" StrokeThickness="3" Opacity="0.10"/>
+  </Canvas>
+</Canvas>

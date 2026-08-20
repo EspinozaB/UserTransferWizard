@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<migration urlid="http://www.microsoft.com/migration/1.0/migxmlext/PublicFolders">
+  <component type="Documents" context="System">
+    <displayName>Public Profile Folders</displayName>
+    <role role="Data">
+      <rules>
+        <include>
+          <objectSet>
+            <pattern type="File">%PUBLIC%\Documents\* [*]</pattern>
+            <pattern type="File">%PUBLIC%\Desktop\* [*]</pattern>
+            <pattern type="File">%PUBLIC%\Downloads\* [*]</pattern>
+            <pattern type="File">%PUBLIC%\Music\* [*]</pattern>
+            <pattern type="File">%PUBLIC%\Pictures\* [*]</pattern>
+            <pattern type="File">%PUBLIC%\Videos\* [*]</pattern>
+          </objectSet>
+        </include>
+      </rules>
+    </role>
+  </component>
+</migration>
