@@ -1,0 +1,40 @@
+{
+  "_comment": "Which folders a Compare & Sync looks at, and what it ignores. Edit this rather than the code - every list here is site-specific, and hard-coding them meant anyone with different software had to maintain a fork. Delete this file and the tool falls back to the same values built in.",
+
+  "_userFolders": "Compared by default. The folders a person keeps their own work in.",
+  "userFolders": [
+    "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos",
+    "Favorites", "Links", "Contacts", "Searches"
+  ],
+
+  "_appDataFolders": "Added only when 'Compare & Sync: include AppData' is on. Roaming only - AppData\\Local is machine-specific by definition.",
+  "appDataFolders": [ "AppData\\Roaming" ],
+
+  "_excludeDirs": "Never compared, at any scope. Caches and per-install state that differ on every machine and are wanted on none.",
+  "excludeDirs": [
+    "AppData\\Local\\Temp",
+    "AppData\\Local\\Microsoft\\Windows\\INetCache",
+    "AppData\\Local\\Microsoft\\Windows\\WebCache",
+    "AppData\\Local\\Microsoft\\Windows\\Explorer",
+    "AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache",
+    "AppData\\Local\\Microsoft\\Edge\\User Data\\Default\\Cache",
+    "AppData\\Local\\Packages",
+    "AppData\\Local\\CrashDumps"
+  ],
+
+  "_excludeFiles": "Never copied. NTUSER.DAT and UsrClass.dat are registry hives - copying one over a working profile destroys it, so they are not negotiable. The rest are working files no one would choose to carry forward.",
+  "excludeFiles": [
+    "ntuser.dat*", "ntuser.ini", "UsrClass.dat*", "desktop.ini", "thumbs.db",
+    "*.tmp", "*.temp", "*.log", "*.etl", "*.dmp", "*.old", "*.bak",
+    "*.crdownload", "*.part", "*.partial", "~$*"
+  ],
+
+  "_rootFolderNoise": "Folders on the root of C: that Windows puts there. Anything NOT in this list is reported by the program comparison as possibly holding software data.",
+  "rootFolderNoise": [
+    "Windows", "Program Files", "Program Files (x86)", "ProgramData", "Users",
+    "PerfLogs", "Recovery", "System Volume Information", "$Recycle.Bin",
+    "$WinREAgent", "$SysReset", "OneDriveTemp", "Intel", "AMD", "NVIDIA",
+    "Drivers", "Config.Msi", "Documents and Settings", "MSOCache",
+    "Temp", "inetpub", "swsetup", "SWSetup", "Dell", "HP"
+  ]
+}

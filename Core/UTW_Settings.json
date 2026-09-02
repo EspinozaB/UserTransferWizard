@@ -1,0 +1,19 @@
+{
+  "_comment": "Site-wide defaults, seeded into each operator's UTW_Settings_<name>.json on first run and restored by Settings > Reset. Safe to edit by hand. Anything left out falls back to the code's own defaults. Personal files are gitignored; this one is committed.",
+  "USMTPath": "",
+  "Domain": "",
+  "CentralPath": "",
+  "LastUsername": "",
+  "LastNewPC": "",
+  "LastSourcePC": "",
+  "LastMigFile": "",
+  "LastExtractPath": "",
+  "ActionIndex": 2,
+  "ScopeIndex": 0,
+  "StoreMode": "Direct",
+  "UiMode": "Simple",
+  "Theme": "Dark",
+  "Overlay": false,
+  "OverlayAnimate": false,
+  "ConfigXmlMode": "auto"
+}
