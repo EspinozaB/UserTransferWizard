@@ -1,0 +1,9 @@
+﻿<!-- Run button glyph. Drawn inside a margin (roughly 4..20 of a 24x24 box) so
+     it never touches its own edge - a glyph that does reads as cut off once it
+     is sitting next to the button's caption. White: the button is filled with
+     the operation's accent colour and white reads on all of them. -->
+<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="24" Height="24">  <Path Stroke="#ffffff" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M5.5,7.5 L18.5,7.5"/>
+  <Path Stroke="#ffffff" StrokeThickness="1.8" StrokeLineJoin="Round" Data="M10,7.5 L10,5 L14,5 L14,7.5"/>
+  <Path Stroke="#ffffff" StrokeThickness="1.8" StrokeLineJoin="Round" Data="M7,9 L7.8,19.5 L16.2,19.5 L17,9"/>
+</Canvas>
